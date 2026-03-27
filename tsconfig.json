@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2020",
+    "types": ["node"],
+
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    "strict": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["client", "node_modules", "dist"]
+}
