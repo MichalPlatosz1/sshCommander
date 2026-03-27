@@ -6,3 +6,4 @@
 - Dodać komendę do przenoszenia plików między terminalem lokalnym a zdalnym
 - Dodać skróty klawiszowe do nawigacji po aplikacji
 - Dodać może jakiś eksplorator plików
+- Zamienić na apke standalone z electronjs
