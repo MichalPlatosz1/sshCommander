@@ -850,35 +850,35 @@ function TerminalModal({
           }}
         >
           <div
-            className="absolute inset-y-0 left-0 w-1 cursor-ew-resize"
+            className="absolute inset-y-0 left-0 z-30 w-2 cursor-ew-resize"
             onMouseDown={(event) => handleResizeStart("w", event)}
           />
           <div
-            className="absolute inset-y-0 right-0 w-1 cursor-ew-resize"
+            className="absolute inset-y-0 right-0 z-30 w-2 cursor-ew-resize"
             onMouseDown={(event) => handleResizeStart("e", event)}
           />
           <div
-            className="absolute inset-x-0 top-0 h-1 cursor-ns-resize"
+            className="absolute inset-x-0 top-0 z-30 h-2 cursor-ns-resize"
             onMouseDown={(event) => handleResizeStart("n", event)}
           />
           <div
-            className="absolute inset-x-0 bottom-0 h-1 cursor-ns-resize"
+            className="absolute inset-x-0 bottom-0 z-30 h-2 cursor-ns-resize"
             onMouseDown={(event) => handleResizeStart("s", event)}
           />
           <div
-            className="absolute left-0 top-0 h-3 w-3 cursor-nwse-resize"
+            className="absolute left-0 top-0 z-40 h-4 w-4 cursor-nwse-resize"
             onMouseDown={(event) => handleResizeStart("nw", event)}
           />
           <div
-            className="absolute right-0 top-0 h-3 w-3 cursor-nesw-resize"
+            className="absolute right-0 top-0 z-40 h-4 w-4 cursor-nesw-resize"
             onMouseDown={(event) => handleResizeStart("ne", event)}
           />
           <div
-            className="absolute bottom-0 left-0 h-3 w-3 cursor-nesw-resize"
+            className="absolute bottom-0 left-0 z-40 h-4 w-4 cursor-nesw-resize"
             onMouseDown={(event) => handleResizeStart("sw", event)}
           />
           <div
-            className="absolute bottom-0 right-0 h-3 w-3 cursor-nwse-resize"
+            className="absolute bottom-0 right-0 z-40 h-4 w-4 cursor-nwse-resize"
             onMouseDown={(event) => handleResizeStart("se", event)}
           />
 
