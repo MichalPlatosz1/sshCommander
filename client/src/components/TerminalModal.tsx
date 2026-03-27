@@ -156,7 +156,7 @@ function TerminalModal({
     const xterm = new Terminal({
       cursorBlink: true,
       scrollback: 5000,
-      convertEol: false,
+      convertEol: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 14,
       lineHeight: 1.2,

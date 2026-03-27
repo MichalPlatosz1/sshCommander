@@ -7,3 +7,9 @@
 - Dodać skróty klawiszowe do nawigacji po aplikacji
 - Dodać może jakiś eksplorator plików
 - Zamienić na apke standalone z electronjs
+
+Files to devibecode:
+
+- ssh-terminal-bride.ts
+- terminal-routes.ts
+- terminal.ts

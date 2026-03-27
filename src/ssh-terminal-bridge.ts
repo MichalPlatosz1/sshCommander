@@ -1,39 +1,23 @@
 import { Client, type ConnectConfig } from "ssh2";
-import { existsSync } from "node:fs";
-import { posix as posixPath } from "node:path";
 import { spawn as ptySpawn, type IPty } from "node-pty";
 import {
   completeSshCommanderEditCommand,
   handleSshCommanderEditCommand,
 } from "./ssh-commander-edit.js";
-import { uploadRemoteFileToCwd } from "./scp-transfer.js";
-
-type SshAuthMethod = "password" | "sshKey";
-
-export type TerminalSshConfig = {
-  targetUser: string;
-  targetMachine: string;
-  targetPort: number;
-  authMethod: SshAuthMethod;
-  password?: string;
-  sshKey?: string;
-};
-
-export type TerminalForSsh = {
-  id: string;
-  name: string;
-  ssh: TerminalSshConfig;
-};
-
-export type TerminalForLocal = {
-  id: string;
-  name: string;
-  type: "local";
-};
-
-export type TerminalConnection = TerminalForSsh | TerminalForLocal;
-
-type SendTerminalOutput = (terminalId: string, text: string) => void;
+import type { SendTerminalOutput } from "./services/ssh-commander-edit-service.js";
+import { ScpTransfer } from "./services/remote-file-transfer-manager.js";
+import {
+  PathManager,
+  getProcessEnvironmentAsStrings,
+  normalizeTerminalOutputLineEndings,
+} from "./services/ssh-runtime-utils.js";
+import type { TerminalConnection, TerminalForLocal } from "./types/terminal.js";
+export type {
+  TerminalConnection,
+  TerminalForLocal,
+  TerminalForSsh,
+  TerminalSshConfig,
+} from "./types/terminal.js";
 
 type TerminalSession = {
   client: Client;
@@ -48,8 +32,6 @@ type TerminalSession = {
   inEscapeSequence: boolean;
 };
 
-const sessions = new Map<string, TerminalSession>();
-
 type LocalTerminalSession = {
   process: IPty | undefined;
   isReady: boolean;
@@ -58,218 +40,84 @@ type LocalTerminalSession = {
   rows: number;
 };
 
-const localSessions = new Map<string, LocalTerminalSession>();
+/**
+ * In-memory store for SSH terminal sessions.
+ */
+class SshSessionStore {
+  private readonly sessions = new Map<string, TerminalSession>();
 
-async function detectRemoteCwd(client: Client): Promise<string | undefined> {
-  return await new Promise((resolve) => {
-    client.exec("pwd", (err: Error | undefined, channel: any) => {
-      if (err || !channel) {
-        resolve(undefined);
-        return;
-      }
-
-      const chunks: Buffer[] = [];
-      channel.on("data", (chunk: Buffer) => {
-        chunks.push(Buffer.from(chunk));
-      });
-
-      channel.on("close", (code?: number) => {
-        if (typeof code === "number" && code !== 0) {
-          resolve(undefined);
-          return;
-        }
-
-        const cwd = Buffer.concat(chunks).toString("utf-8").trim();
-        resolve(cwd || undefined);
-      });
-    });
-  });
-}
-
-async function detectRemoteHomeDir(
-  client: Client,
-): Promise<string | undefined> {
-  return await new Promise((resolve) => {
-    client.exec(
-      'printf "%s" "$HOME"',
-      (err: Error | undefined, channel: any) => {
-        if (err || !channel) {
-          resolve(undefined);
-          return;
-        }
-
-        const chunks: Buffer[] = [];
-        channel.on("data", (chunk: Buffer) => {
-          chunks.push(Buffer.from(chunk));
-        });
-
-        channel.on("close", (code?: number) => {
-          if (typeof code === "number" && code !== 0) {
-            resolve(undefined);
-            return;
-          }
-
-          const homeDir = Buffer.concat(chunks).toString("utf-8").trim();
-          resolve(homeDir || undefined);
-        });
-      },
-    );
-  });
-}
-function normalizeOutputForTerminal(text: string): string {
-  return text.replace(/\r?\n/g, "\r\n");
-}
-
-function escapeShellArg(value: string): string {
-  return `'${value.replace(/'/g, `"'"'`)}'`;
-}
-
-async function remoteDirectoryExists(
-  client: Client,
-  remoteDir: string,
-): Promise<boolean> {
-  return await new Promise((resolve) => {
-    const command = `test -d ${escapeShellArg(remoteDir)} && printf ok || true`;
-    client.exec(command, (err: Error | undefined, channel: any) => {
-      if (err || !channel) {
-        resolve(false);
-        return;
-      }
-
-      const out: Buffer[] = [];
-      channel.on("data", (chunk: Buffer) => {
-        out.push(Buffer.from(chunk));
-      });
-
-      channel.on("close", () => {
-        const text = Buffer.concat(out).toString("utf-8").trim();
-        resolve(text === "ok");
-      });
-    });
-  });
-}
-
-function getStringProcessEnv(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-}
-
-function resolveLocalShellPath(): string {
-  const preferredShell = process.env.SHELL;
-
-  if (preferredShell && existsSync(preferredShell)) {
-    return preferredShell;
+  get(terminalId: string): TerminalSession | undefined {
+    return this.sessions.get(terminalId);
   }
 
-  if (existsSync("/bin/bash")) {
-    return "/bin/bash";
-  }
-
-  return "/bin/sh";
-}
-
-function stripWrappingQuotes(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-
-  return value;
-}
-
-function updateRemoteCwdFromCommandLine(
-  session: TerminalSession,
-  commandLine: string,
-): void {
-  const trimmed = commandLine.trim();
-  if (!trimmed) {
-    return;
-  }
-
-  const firstSegment = trimmed.split(/&&|\|\||;/)[0]?.trim() ?? "";
-  const cdMatch = /^cd(?:\s+(.+))?$/.exec(firstSegment);
-  if (!cdMatch) {
-    return;
-  }
-
-  const rawTarget = (cdMatch[1] ?? "").trim();
-  if (!rawTarget || rawTarget === "~") {
-    session.remoteCwd = session.remoteHomeDir || "/";
-    return;
-  }
-
-  if (rawTarget === "-") {
-    return;
-  }
-
-  const targetDir = stripWrappingQuotes(rawTarget);
-  if (!targetDir) {
-    return;
-  }
-
-  if (targetDir === "~") {
-    session.remoteCwd = session.remoteHomeDir || "/";
-    return;
-  }
-
-  if (targetDir.startsWith("~/")) {
-    const suffix = targetDir.slice(2);
-    session.remoteCwd = posixPath.normalize(
-      posixPath.join(session.remoteHomeDir || "/", suffix),
-    );
-    return;
-  }
-
-  if (targetDir.startsWith("/")) {
-    session.remoteCwd = posixPath.normalize(targetDir);
-    return;
-  }
-
-  session.remoteCwd = posixPath.normalize(
-    posixPath.join(session.remoteCwd || "/", targetDir),
-  );
-}
-
-function trackRemoteCwdFromInteractiveInput(
-  session: TerminalSession,
-  input: string,
-): void {
-  for (const char of input) {
-    if (session.inEscapeSequence) {
-      // CSI/SS3 escape sequences end with a final byte in range 0x40-0x7E.
-      if (/[@-~]/.test(char)) {
-        session.inEscapeSequence = false;
-      }
-      continue;
+  getOrCreate(terminalId: string): TerminalSession {
+    const existing = this.sessions.get(terminalId);
+    if (existing) {
+      return existing;
     }
 
-    if (char === "\u001b") {
-      session.inEscapeSequence = true;
-      continue;
-    }
+    const created: TerminalSession = {
+      client: new Client(),
+      stream: undefined,
+      isReady: false,
+      connectingPromise: undefined,
+      cols: 120,
+      rows: 30,
+      remoteCwd: "/",
+      remoteHomeDir: "/",
+      inputLineBuffer: "",
+      inEscapeSequence: false,
+    };
 
-    if (char === "\b" || char === "\u007f") {
-      session.inputLineBuffer = session.inputLineBuffer.slice(0, -1);
-      continue;
-    }
+    this.sessions.set(terminalId, created);
+    return created;
+  }
 
-    if (char === "\r" || char === "\n") {
-      updateRemoteCwdFromCommandLine(session, session.inputLineBuffer);
-      session.inputLineBuffer = "";
-      continue;
-    }
-
-    if (char >= " ") {
-      session.inputLineBuffer += char;
-    }
+  delete(terminalId: string): boolean {
+    return this.sessions.delete(terminalId);
   }
 }
 
+/**
+ * In-memory store for local PTY sessions.
+ */
+class LocalSessionStore {
+  private readonly sessions = new Map<string, LocalTerminalSession>();
+
+  get(terminalId: string): LocalTerminalSession | undefined {
+    return this.sessions.get(terminalId);
+  }
+
+  getOrCreate(terminalId: string): LocalTerminalSession {
+    const existing = this.sessions.get(terminalId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: LocalTerminalSession = {
+      process: undefined,
+      isReady: false,
+      connectingPromise: undefined,
+      cols: 120,
+      rows: 30,
+    };
+
+    this.sessions.set(terminalId, created);
+    return created;
+  }
+
+  delete(terminalId: string): boolean {
+    return this.sessions.delete(terminalId);
+  }
+}
+
+const sshSessionStore = new SshSessionStore();
+const localSessionStore = new LocalSessionStore();
+const scpTransfer = new ScpTransfer();
+
+/**
+ * Handles `sshCommander` command execution for a terminal.
+ */
 export async function handleSshCommanderCommand(
   terminal: TerminalConnection,
   commandLine: string,
@@ -277,50 +125,9 @@ export async function handleSshCommanderCommand(
 ): Promise<void> {
   await handleSshCommanderEditCommand(terminal, commandLine, sendOutput, {
     ensureTerminalConnected,
-    getSession: (terminalId: string) => sessions.get(terminalId),
+    getSession: (terminalId: string) => sshSessionStore.get(terminalId),
     isLocalTerminal,
   });
-}
-
-function getOrCreateSession(terminalId: string): TerminalSession {
-  const existing = sessions.get(terminalId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: TerminalSession = {
-    client: new Client(),
-    stream: undefined,
-    isReady: false,
-    connectingPromise: undefined,
-    cols: 120,
-    rows: 30,
-    remoteCwd: "/",
-    remoteHomeDir: "/",
-    inputLineBuffer: "",
-    inEscapeSequence: false,
-  };
-
-  sessions.set(terminalId, created);
-  return created;
-}
-
-function getOrCreateLocalSession(terminalId: string): LocalTerminalSession {
-  const existing = localSessions.get(terminalId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: LocalTerminalSession = {
-    process: undefined,
-    isReady: false,
-    connectingPromise: undefined,
-    cols: 120,
-    rows: 30,
-  };
-
-  localSessions.set(terminalId, created);
-  return created;
 }
 
 function isLocalTerminal(
@@ -329,11 +136,14 @@ function isLocalTerminal(
   return "type" in terminal && terminal.type === "local";
 }
 
+/**
+ * Ensures a local PTY shell session is initialized and ready.
+ */
 async function ensureLocalTerminalConnected(
   terminal: TerminalForLocal,
   sendOutput: SendTerminalOutput,
 ): Promise<void> {
-  const session = getOrCreateLocalSession(terminal.id);
+  const session = localSessionStore.getOrCreate(terminal.id);
 
   if (session.isReady && session.process) {
     return;
@@ -344,12 +154,12 @@ async function ensureLocalTerminalConnected(
   }
 
   session.connectingPromise = new Promise<void>((resolve, reject) => {
-    const shell = resolveLocalShellPath();
+    const shell = PathManager.getPreferredLocalShellPath();
 
     try {
       const child = ptySpawn(shell, ["-i"], {
         cwd: process.cwd(),
-        env: getStringProcessEnv(),
+        env: getProcessEnvironmentAsStrings(),
         name: "xterm-256color",
         cols: session.cols,
         rows: session.rows,
@@ -365,7 +175,7 @@ async function ensureLocalTerminalConnected(
       resolve();
 
       child.onData((chunk: string) => {
-        sendOutput(terminal.id, normalizeOutputForTerminal(chunk));
+        sendOutput(terminal.id, normalizeTerminalOutputLineEndings(chunk));
       });
 
       child.onExit(({ exitCode }: { exitCode: number }) => {
@@ -390,6 +200,9 @@ async function ensureLocalTerminalConnected(
   return session.connectingPromise;
 }
 
+/**
+ * Ensures terminal connectivity for either local or SSH terminal types.
+ */
 export async function ensureTerminalConnected(
   terminal: TerminalConnection,
   sendOutput: SendTerminalOutput,
@@ -398,7 +211,7 @@ export async function ensureTerminalConnected(
     return ensureLocalTerminalConnected(terminal, sendOutput);
   }
 
-  const session = getOrCreateSession(terminal.id);
+  const session = sshSessionStore.getOrCreate(terminal.id);
 
   if (session.isReady && session.stream) {
     return;
@@ -440,11 +253,11 @@ export async function ensureTerminalConnected(
           stream.on("data", (chunk: Buffer) => {
             sendOutput(
               terminal.id,
-              normalizeOutputForTerminal(chunk.toString("utf-8")),
+              normalizeTerminalOutputLineEndings(chunk.toString("utf-8")),
             );
           });
 
-          detectRemoteCwd(session.client)
+          PathManager.getRemoteWorkingDirectory(session.client)
             .then((cwd) => {
               if (cwd) {
                 session.remoteCwd = cwd;
@@ -454,7 +267,7 @@ export async function ensureTerminalConnected(
               // no-op
             });
 
-          detectRemoteHomeDir(session.client)
+          PathManager.getRemoteHomeDirectory(session.client)
             .then((homeDir) => {
               if (homeDir) {
                 session.remoteHomeDir = homeDir;
@@ -467,7 +280,7 @@ export async function ensureTerminalConnected(
           stream.stderr?.on("data", (chunk: Buffer) => {
             sendOutput(
               terminal.id,
-              normalizeOutputForTerminal(chunk.toString("utf-8")),
+              normalizeTerminalOutputLineEndings(chunk.toString("utf-8")),
             );
           });
 
@@ -544,6 +357,9 @@ export async function ensureTerminalConnected(
   return session.connectingPromise;
 }
 
+/**
+ * Sends one command line to a terminal and appends a trailing newline.
+ */
 export async function sendCommandToTerminal(
   terminal: TerminalConnection,
   command: string,
@@ -552,6 +368,9 @@ export async function sendCommandToTerminal(
   await sendRawInputToTerminal(terminal, `${command}\n`, sendOutput);
 }
 
+/**
+ * Writes raw user input bytes into a connected terminal stream.
+ */
 export async function sendRawInputToTerminal(
   terminal: TerminalConnection,
   input: string,
@@ -560,7 +379,7 @@ export async function sendRawInputToTerminal(
   await ensureTerminalConnected(terminal, sendOutput);
 
   if (isLocalTerminal(terminal)) {
-    const session = localSessions.get(terminal.id);
+    const session = localSessionStore.get(terminal.id);
     if (!session?.process || !session.isReady) {
       sendOutput(terminal.id, "[local error] Terminal stream is not ready.");
       return;
@@ -572,17 +391,20 @@ export async function sendRawInputToTerminal(
     return;
   }
 
-  const session = sessions.get(terminal.id);
+  const session = sshSessionStore.get(terminal.id);
   if (!session?.stream || !session.isReady) {
     sendOutput(terminal.id, "[ssh error] Terminal stream is not ready.");
     return;
   }
 
   // Track CWD changes for relative path resolution.
-  trackRemoteCwdFromInteractiveInput(session, input);
+  PathManager.trackRemoteCwdFromInput(session, input);
   session.stream.write(input);
 }
 
+/**
+ * Updates terminal dimensions for local PTY or SSH shell window.
+ */
 export async function resizeTerminalPty(
   terminal: TerminalConnection,
   cols: number,
@@ -590,7 +412,7 @@ export async function resizeTerminalPty(
   sendOutput: SendTerminalOutput,
 ): Promise<void> {
   if (isLocalTerminal(terminal)) {
-    const session = getOrCreateLocalSession(terminal.id);
+    const session = localSessionStore.getOrCreate(terminal.id);
 
     session.cols = cols;
     session.rows = rows;
@@ -602,7 +424,7 @@ export async function resizeTerminalPty(
     return;
   }
 
-  const session = getOrCreateSession(terminal.id);
+  const session = sshSessionStore.getOrCreate(terminal.id);
 
   session.cols = cols;
   session.rows = rows;
@@ -616,14 +438,17 @@ export async function resizeTerminalPty(
   }
 }
 
+/**
+ * Closes and removes terminal session state for the given terminal id.
+ */
 export function resetTerminalConnection(terminalId: string) {
-  const localSession = localSessions.get(terminalId);
+  const localSession = localSessionStore.get(terminalId);
   if (localSession) {
     localSession.process?.kill();
-    localSessions.delete(terminalId);
+    localSessionStore.delete(terminalId);
   }
 
-  const session = sessions.get(terminalId);
+  const session = sshSessionStore.get(terminalId);
   if (!session) {
     return;
   }
@@ -633,20 +458,28 @@ export function resetTerminalConnection(terminalId: string) {
   session.connectingPromise = undefined;
   session.client.removeAllListeners();
   session.client.end();
-  sessions.delete(terminalId);
+  sshSessionStore.delete(terminalId);
 }
 
+/**
+ * Provides command completion for `sshCommander` command lines.
+ */
 export async function completeSshCommanderCommand(
   terminal: TerminalConnection,
   commandLine: string,
 ): Promise<string | undefined> {
   return await completeSshCommanderEditCommand(terminal, commandLine, {
     ensureTerminalConnected,
-    getSession: (terminalId: string) => sessions.get(terminalId),
+    getSession: (terminalId: string) => sshSessionStore.get(terminalId),
     isLocalTerminal,
   });
 }
 
+/**
+ * Uploads a dropped file into the remote current directory for SSH terminals.
+ *
+ * Uses tracked session cwd when valid, otherwise falls back to remote home.
+ */
 export async function uploadFileToTerminalCurrentDirectory(
   terminal: TerminalConnection,
   fileName: string,
@@ -665,7 +498,7 @@ export async function uploadFileToTerminalCurrentDirectory(
 
   await ensureTerminalConnected(terminal, sendOutput);
 
-  const session = sessions.get(terminal.id);
+  const session = sshSessionStore.get(terminal.id);
   if (!session?.isReady) {
     throw new Error("SSH session is not ready.");
   }
@@ -676,10 +509,13 @@ export async function uploadFileToTerminalCurrentDirectory(
   });
 
   let uploadBaseDir = session.remoteCwd;
-  const cwdExists = await remoteDirectoryExists(session.client, uploadBaseDir);
+  const cwdExists = await PathManager.isRemoteDirectory(
+    session.client,
+    uploadBaseDir,
+  );
   if (!cwdExists) {
     const fallbackDir = session.remoteHomeDir || "/";
-    const fallbackExists = await remoteDirectoryExists(
+    const fallbackExists = await PathManager.isRemoteDirectory(
       session.client,
       fallbackDir,
     );
@@ -703,7 +539,7 @@ export async function uploadFileToTerminalCurrentDirectory(
     session.remoteCwd = fallbackDir;
   }
 
-  const remotePath = await uploadRemoteFileToCwd(
+  const remotePath = await scpTransfer.uploadRemoteFileToCwd(
     session.client,
     uploadBaseDir,
     fileName,
