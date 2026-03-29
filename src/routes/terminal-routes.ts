@@ -30,6 +30,11 @@ export class TerminalRoutes {
       this.upload.single("file"),
       this.handleUploadToTerminal,
     );
+    router.post(
+      "/ssh-keys/load",
+      this.upload.single("keyFile"),
+      this.handleLoadSshKey,
+    );
 
     return router;
   }
@@ -139,5 +144,37 @@ export class TerminalRoutes {
       this.eventBus.sendOutput(terminalId, `[scp error] ${message}\r\n`);
       return res.status(500).json({ message });
     }
+  };
+
+  private handleLoadSshKey = (req: Request, res: Response) => {
+    const uploadedFile = req.file;
+    if (!uploadedFile) {
+      return res.status(400).json({ message: "Missing SSH key file." });
+    }
+
+    if (uploadedFile.size <= 0) {
+      return res.status(400).json({ message: "SSH key file is empty." });
+    }
+
+    // Convert buffer to string
+    const keyContent = uploadedFile.buffer.toString("utf-8");
+
+    // Basic validation: SSH keys should start with specific headers
+    if (
+      !keyContent.includes("BEGIN") ||
+      !keyContent.includes("PRIVATE KEY") ||
+      !keyContent.includes("END")
+    ) {
+      return res.status(400).json({
+        message: "Invalid SSH key format. File should be a valid private key.",
+      });
+    }
+
+    // Return the key content to frontend
+    return res.status(200).json({
+      keyContent,
+      fileName: uploadedFile.originalname,
+      size: uploadedFile.size,
+    });
   };
 }

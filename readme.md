@@ -1,6 +1,5 @@
 ### TODO:
 
-- Dodać ładowanie kluczy SSH z pliku
 - Dodać generowanie kluczy SSH z poziomu aplikacji
 - Dodać obsługę klucza osobno od terminala żeby móc go używać w różnych terminalach wygodnie
 - Dodać komendę do przenoszenia plików między terminalem lokalnym a zdalnym
