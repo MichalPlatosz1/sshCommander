@@ -19,8 +19,10 @@ export type {
   TerminalSshConfig,
 } from "./types/terminal.js";
 
-type TerminalSession = {
-  client: Client;
+type SharedTerminalSession = {
+  kind: "ssh" | "local";
+  process: IPty | undefined;
+  client: Client | undefined;
   stream: any | undefined;
   isReady: boolean;
   connectingPromise: Promise<void> | undefined;
@@ -32,82 +34,93 @@ type TerminalSession = {
   inEscapeSequence: boolean;
 };
 
-type LocalTerminalSession = {
-  process: IPty | undefined;
-  isReady: boolean;
-  connectingPromise: Promise<void> | undefined;
-  cols: number;
-  rows: number;
+type SshTerminalSession = SharedTerminalSession & {
+  kind: "ssh";
+  client: Client;
+  process: undefined;
 };
 
-/**
- * In-memory store for SSH terminal sessions.
- */
-class SshSessionStore {
-  private readonly sessions = new Map<string, TerminalSession>();
+type LocalTerminalSession = SharedTerminalSession & {
+  kind: "local";
+  process: IPty | undefined;
+  client: undefined;
+  stream: undefined;
+};
 
-  get(terminalId: string): TerminalSession | undefined {
+function createSshSession(): SshTerminalSession {
+  return {
+    kind: "ssh",
+    process: undefined,
+    client: new Client(),
+    stream: undefined,
+    isReady: false,
+    connectingPromise: undefined,
+    cols: 120,
+    rows: 30,
+    remoteCwd: "/",
+    remoteHomeDir: "/",
+    inputLineBuffer: "",
+    inEscapeSequence: false,
+  };
+}
+
+function createLocalSession(): LocalTerminalSession {
+  return {
+    kind: "local",
+    process: undefined,
+    client: undefined,
+    stream: undefined,
+    isReady: false,
+    connectingPromise: undefined,
+    cols: 120,
+    rows: 30,
+    remoteCwd: "/",
+    remoteHomeDir: "/",
+    inputLineBuffer: "",
+    inEscapeSequence: false,
+  };
+}
+
+class SessionStore<TSession extends SharedTerminalSession> {
+  private readonly sessions = new Map<string, TSession>();
+
+  constructor(private readonly createSession: () => TSession) {}
+
+  get(terminalId: string): TSession | undefined {
     return this.sessions.get(terminalId);
   }
 
-  getOrCreate(terminalId: string): TerminalSession {
+  getOrCreate(terminalId: string): TSession {
     const existing = this.sessions.get(terminalId);
     if (existing) {
       return existing;
     }
 
-    const created: TerminalSession = {
-      client: new Client(),
-      stream: undefined,
-      isReady: false,
-      connectingPromise: undefined,
-      cols: 120,
-      rows: 30,
-      remoteCwd: "/",
-      remoteHomeDir: "/",
-      inputLineBuffer: "",
-      inEscapeSequence: false,
-    };
-
+    const created = this.createSession();
     this.sessions.set(terminalId, created);
     return created;
   }
 
   delete(terminalId: string): boolean {
     return this.sessions.delete(terminalId);
+  }
+};
+
+/**
+ * In-memory store for SSH terminal sessions.
+ */
+class SshSessionStore extends SessionStore<SshTerminalSession> {
+  constructor() {
+    super(createSshSession);
   }
 }
 
 /**
  * In-memory store for local PTY sessions.
  */
-class LocalSessionStore {
-  private readonly sessions = new Map<string, LocalTerminalSession>();
-
-  get(terminalId: string): LocalTerminalSession | undefined {
-    return this.sessions.get(terminalId);
-  }
-
-  getOrCreate(terminalId: string): LocalTerminalSession {
-    const existing = this.sessions.get(terminalId);
-    if (existing) {
-      return existing;
-    }
-
-    const created: LocalTerminalSession = {
-      process: undefined,
-      isReady: false,
-      connectingPromise: undefined,
-      cols: 120,
-      rows: 30,
-    };
-
-    this.sessions.set(terminalId, created);
-    return created;
-  }
-
-  delete(terminalId: string): boolean {
-    return this.sessions.delete(terminalId);
+class LocalSessionStore extends SessionStore<LocalTerminalSession> {
+  constructor() {
+    super(createLocalSession);
   }
 }
 

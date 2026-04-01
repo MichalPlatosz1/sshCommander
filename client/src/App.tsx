@@ -103,7 +103,16 @@ async function getTerminals() {
   }
 
   const data: TerminalModel[] = await response.json();
-  return data;
+  return data.map((terminal) => {
+    if ("type" in terminal && terminal.type === "local" && !terminal.id) {
+      return {
+        ...terminal,
+        id: "local-machine",
+      };
+    }
+
+    return terminal;
+  });
 }
 
 async function uploadTerminalFile(
@@ -378,6 +387,7 @@ function App() {
   }, [openTerminalIds]);
 
   const selectedTerminal = terminals.find((terminal) => terminal.id === selectedTerminalId);
+
   const handleSendRawInput = (terminalId: string, input: string) => {
     if (!input || !socketRef.current) {
       return;

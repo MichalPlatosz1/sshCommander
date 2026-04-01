@@ -115,11 +115,14 @@ function TerminalModal({
         : terminal.ssh
           ? `${terminal.ssh.targetMachine}:${terminal.ssh.targetPort}`
           : undefined;
+  const resolvedTerminalId = terminal.id || "local-machine";
 
   const sshCommandHistoryRef = useRef<string[]>([]);
   const sshHistoryIndexRef = useRef<number>(-1);
   const completionPendingRef = useRef(false);
+  const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isTerminalIdCopied, setIsTerminalIdCopied] = useState(false);
 
   const uploadBadgeText = uploadStatus
     ? uploadStatus.phase === "uploading"
@@ -130,6 +133,23 @@ function TerminalModal({
     : null;
 
   const isCommandInterceptEnabled = terminal.type !== "local";
+
+  const handleCopyTerminalId = async () => {
+    try {
+      await navigator.clipboard.writeText(resolvedTerminalId);
+      setIsTerminalIdCopied(true);
+
+      if (copyFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+
+      copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+        setIsTerminalIdCopied(false);
+      }, 1500);
+    } catch {
+      // no-op
+    }
+  };
 
   useEffect(() => {
     onSendRawInputRef.current = onSendRawInput;
@@ -146,6 +166,15 @@ function TerminalModal({
   useEffect(() => {
     onResizeRef.current = onResize;
   }, [onResize]);
+
+  useEffect(
+    () => () => {
+      if (copyFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const container = terminalContainerRef.current;
@@ -890,7 +919,7 @@ function TerminalModal({
           <span className="h-3 w-3 rounded-full bg-yellow-400" />
           <span className="h-3 w-3 rounded-full bg-green-500" />
           <span className="ml-2 text-xs text-slate-300">
-            {terminal.name} ({terminal.id})
+            {terminal.name} ({resolvedTerminalId})
           </span>
           {terminalHostLabel ? (
             <span className="text-[11px] text-slate-400">[{terminalHostLabel}]</span>
@@ -904,7 +933,15 @@ function TerminalModal({
             </span>
           ) : null}
           <button
-            className="btn btn-ghost btn-xs ml-auto text-slate-300 hover:bg-base-300/20"
+            className={`btn btn-ghost btn-xs ml-auto text-slate-300 hover:bg-base-300/20 ${isTerminalIdCopied ? "btn-success" : ""}`}
+            onClick={() => void handleCopyTerminalId()}
+            title={isTerminalIdCopied ? "Copied" : "Copy terminal ID"}
+            aria-label={`Copy terminal ID for ${terminal.name}`}
+          >
+            {isTerminalIdCopied ? "Copied" : "Copy ID"}
+          </button>
+          <button
+            className="btn btn-ghost btn-xs text-slate-300 hover:bg-base-300/20"
             onClick={onClose}
             title="Close terminal window"
             aria-label={`Close ${terminal.name}`}
